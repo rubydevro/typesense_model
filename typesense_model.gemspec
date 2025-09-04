@@ -4,7 +4,7 @@ Gem::Specification.new do |spec|
   spec.name          = "typesense_model"
   spec.version       = TypesenseModel::VERSION
   spec.authors       = ["Emanuel Comsa"]
-  spec.email         = ["cremzinc@gmail.com"]
+  spec.email         = ["office@rubydev.ro"]
 
   spec.summary       = "ActiveModel-like interface for Typesense"
   spec.description   = "A Ruby gem that provides an ActiveModel-like interface for working with Typesense search engine"
