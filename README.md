@@ -202,6 +202,102 @@ results = Product.import_all_to_typesense(
 # results => { success: 500, failed: 0, errors: [...] }
 ```
 
+## Advanced search
+
+### Highlights, scores and grouped results
+
+`search` returns a `SearchResults` that, beyond enumerating records, exposes the
+search metadata Typesense returns:
+
+```ruby
+results = Product.search("running shoe")
+
+# Each record paired with its highlights and relevance score
+results.hits_with_meta.each do |hit|
+  hit[:record]      # => Product-like document
+  hit[:highlights]  # => [{ "field" => "title", ... }]
+  hit[:text_match]  # => relevance score
+end
+
+# When searching with group_by:
+grouped = Product.search("shoe", group_by: "brand")
+grouped.grouped_hits.each do |group|
+  group[:group_key] # => ["Nike"]
+  group[:hits]      # => [records...]
+end
+```
+
+Geo and vector search parameters are passed straight through as options, e.g.
+`Product.search("*", filter_by: "location:(48.8,2.3,5 km)")`.
+
+### Multi-search
+
+Issue several queries in a single request:
+
+```ruby
+results = Product.multi_search([
+  { q: "shoe" },
+  { q: "boot", filter_by: "price:>100" }
+])
+results.first.total_hits
+```
+
+### Synonyms and overrides (curation)
+
+```ruby
+Product.upsert_synonym("coat-synonyms", synonyms: %w[coat jacket parka])
+Product.upsert_override("promote-nike", rule: { query: "shoe", match: "exact" },
+                                        includes: [{ id: "1", position: 1 }])
+```
+
+## Async syncing
+
+Pass `async: true` to perform the Typesense write in an ActiveJob instead of
+inline in the `after_save`/`after_destroy` callbacks:
+
+```ruby
+class Product < ApplicationRecord
+  uses_typesense collection: "products", async: true do |s|
+    s.field :id, :string
+    s.field :title, :string
+  end
+end
+```
+
+Requires ActiveJob; the job (`TypesenseModel::SyncJob`) reloads the record and
+syncs it on whatever queue adapter your app is configured with.
+
+## Configuration
+
+Failures in the background sync callbacks are logged rather than raised. By
+default they go to `Rails.logger` (or `$stderr` outside Rails); override with:
+
+```ruby
+TypesenseModel.logger = MyLogger.new
+```
+
+## Development
+
+After checking out the repo, install dependencies and run the test suite:
+
+```bash
+bundle install
+bundle exec rake          # runs the unit specs (Typesense client is mocked)
+```
+
+Integration specs talk to a real Typesense server and are skipped by default.
+To run them, start a local Typesense instance and set `TYPESENSE_INTEGRATION`:
+
+```bash
+TYPESENSE_INTEGRATION=1 TYPESENSE_API_KEY=test-key bundle exec rspec --tag integration
+```
+
+To build the gem locally:
+
+```bash
+gem build typesense_model.gemspec
+```
+
 ## License
 
 Available as open source under the MIT License.
