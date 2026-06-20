@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module TypesenseModel
   class Schema
     attr_reader :fields, :collection_name, :default_sorting_field
@@ -28,12 +30,6 @@ module TypesenseModel
         fields: @fields,
         default_sorting_field: @default_sorting_field
       }.compact
-    end
-
-    private
-
-    def default_sorting_field
-      @fields.find { |f| f[:name] == 'id' }&.dig(:name)
     end
   end
 end 

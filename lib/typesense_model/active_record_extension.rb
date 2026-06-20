@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module TypesenseModel
   module ActiveRecordExtension
     def self.included(base)
@@ -6,9 +8,10 @@ module TypesenseModel
 
     module ClassMethods
       # Usage: uses_typesense collection: 'plugs', model_json: :as_json, schema: ->(s) { s.field :id, :string }
-      def uses_typesense(collection: nil, model_json: :as_json_typesense, schema: nil, &block)
+      def uses_typesense(collection: nil, model_json: :as_json_typesense, schema: nil, async: false, &block)
         @_typesense_collection_name = collection || name.underscore.pluralize
         @_typesense_model_json_method = model_json
+        @_typesense_async = async
 
         if schema
           @_typesense_schema = Schema.new
@@ -28,6 +31,10 @@ module TypesenseModel
 
         define_singleton_method(:typesense_model_json_method) do
           @_typesense_model_json_method
+        end
+
+        define_singleton_method(:typesense_async?) do
+          @_typesense_async
         end
 
         define_singleton_method(:search) do |query, options = {}|
@@ -59,10 +66,30 @@ module TypesenseModel
       end
     end
 
+    # Enqueue an async sync via ActiveJob. Kept as a module method so it can be
+    # stubbed in tests and so the job lookup lives in one place.
+    def self.enqueue_sync(class_name, id, action)
+      unless defined?(ActiveJob::Base) && defined?(TypesenseModel::SyncJob)
+        raise TypesenseModel::Error, "async: true requires ActiveJob to be available"
+      end
+      TypesenseModel::SyncJob.perform_later(class_name, id, action.to_s)
+    end
+
     # Instance methods for callbacks
     def sync_to_typesense
       return unless self.class.respond_to?(:typesense_model_json_method)
-      
+
+      if self.class.respond_to?(:typesense_async?) && self.class.typesense_async?
+        ActiveRecordExtension.enqueue_sync(self.class.name, id.to_s, :upsert)
+      else
+        sync_to_typesense_now
+      end
+    end
+
+    # Synchronously write this record's document to Typesense.
+    def sync_to_typesense_now
+      return unless self.class.respond_to?(:typesense_model_json_method)
+
       json_method = self.class.typesense_model_json_method
       document_data = if json_method.is_a?(Proc)
         json_method.call(self)
@@ -73,17 +100,28 @@ module TypesenseModel
       proxy = TypesenseProxy.for(self.class)
       sanitized = proxy.send(:sanitize_document, stringify_keys(document_data))
       proxy.client.collections[proxy.collection_name].documents.upsert(sanitized)
-    rescue => e
-      Rails.logger.error "Failed to sync #{self.class.name}##{id} to Typesense: #{e.message}" if defined?(Rails)
+    rescue Typesense::Error => e
+      TypesenseModel.logger.error("Failed to sync #{self.class.name}##{id} to Typesense: #{e.message}")
     end
 
     def remove_from_typesense
       return unless self.class.respond_to?(:typesense_model_json_method)
-      
+
+      if self.class.respond_to?(:typesense_async?) && self.class.typesense_async?
+        ActiveRecordExtension.enqueue_sync(self.class.name, id.to_s, :remove)
+      else
+        remove_from_typesense_now
+      end
+    end
+
+    # Synchronously delete this record's document from Typesense.
+    def remove_from_typesense_now
+      return unless self.class.respond_to?(:typesense_model_json_method)
+
       proxy = TypesenseProxy.for(self.class)
       proxy.client.collections[proxy.collection_name].documents[id].delete
-    rescue => e
-      Rails.logger.error "Failed to remove #{self.class.name}##{id} from Typesense: #{e.message}" if defined?(Rails)
+    rescue Typesense::Error => e
+      TypesenseModel.logger.error("Failed to remove #{self.class.name}##{id} from Typesense: #{e.message}")
     end
 
     # Default JSON method for Typesense
@@ -98,26 +136,48 @@ module TypesenseModel
       hash.each_with_object({}) { |(k, v), h| h[k.to_s] = v }
     end
 
-    # Simple adapter that maps an AR model class into a TypesenseModel::Base-like class
+    # Adapter that maps an AR model class into a TypesenseModel::Base-like class.
+    #
+    # A dedicated proxy subclass is built and memoized per AR model so that the
+    # collection name and schema never clobber each other across models or
+    # threads -- each subclass carries its own class-level state.
     class TypesenseProxy < TypesenseModel::Base
       class << self
+        PROXY_MUTEX = Mutex.new
+
         def for(ar_class)
-          @ar_class = ar_class
-          collection_name(ar_class.respond_to?(:typesense_collection_name) ? ar_class.typesense_collection_name : ar_class.name.underscore.pluralize)
+          @proxies ||= {}
+          return @proxies[ar_class.name] if @proxies.key?(ar_class.name)
 
-          if ar_class.respond_to?(:typesense_schema) && ar_class.typesense_schema
-            @_schema_definition = ar_class.typesense_schema
+          PROXY_MUTEX.synchronize do
+            @proxies[ar_class.name] ||= build_proxy(ar_class)
           end
-
-          self
-        end
-
-        def ar_class
-          @ar_class
         end
 
         def client
           TypesenseModel.configuration.client
+        end
+
+        private
+
+        def build_proxy(ar_class)
+          resolved_collection =
+            if ar_class.respond_to?(:typesense_collection_name)
+              ar_class.typesense_collection_name
+            else
+              ar_class.name.underscore.pluralize
+            end
+          resolved_schema = ar_class.typesense_schema if ar_class.respond_to?(:typesense_schema)
+
+          Class.new(self) do
+            @ar_class = ar_class
+            collection_name(resolved_collection)
+            @_schema_definition = resolved_schema
+
+            class << self
+              attr_reader :ar_class
+            end
+          end
         end
       end
     end

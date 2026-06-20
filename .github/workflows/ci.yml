@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    name: "Ruby ${{ matrix.ruby }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.1", "3.2", "3.3"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+      - name: Run unit specs
+        run: bundle exec rake
+
+  integration:
+    name: "Integration (live Typesense)"
+    runs-on: ubuntu-latest
+    services:
+      typesense:
+        image: typesense/typesense:0.25.2
+        ports:
+          - 8108:8108
+        volumes:
+          # Mount the data dir so it exists inside the container; Typesense
+          # refuses to start otherwise. Docker creates both the host source
+          # and the container mount point.
+          - /tmp/typesense-data:/data
+        env:
+          TYPESENSE_API_KEY: test-key
+          TYPESENSE_DATA_DIR: /data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+      # Poll readiness from the runner (curl is always present here) rather than
+      # with an in-container health check, since the Typesense image may not ship curl.
+      - name: Wait for Typesense
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8108/health; then
+              echo "Typesense is ready"
+              exit 0
+            fi
+            echo "Waiting for Typesense... ($i)"
+            sleep 2
+          done
+          echo "Typesense did not become ready in time" >&2
+          exit 1
+      - name: Run integration specs
+        env:
+          TYPESENSE_INTEGRATION: "1"
+          TYPESENSE_API_KEY: test-key
+          TYPESENSE_HOST: localhost
+          TYPESENSE_PORT: "8108"
+          TYPESENSE_PROTOCOL: http
+        run: bundle exec rspec --tag integration

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module TypesenseModel
   class Search
     def initialize(model_class, query, options = {})
@@ -25,12 +27,7 @@ module TypesenseModel
     private
 
     def default_queryable_fields
-      @model_class.schema_definition.fields
-        .select { |f| f[:index] }
-        .select { |f| f[:type] == 'string' }
-        .reject { |f| f[:name] == 'id' }
-        .map { |f| f[:name] }
-        .join(',')
+      @model_class.default_query_by
     end
   end
 
@@ -60,6 +57,33 @@ module TypesenseModel
       @raw_response['hits'] || []
     end
 
+    # Each hit paired with its search metadata: the model record, the per-field
+    # highlight snippets, and the relevance score Typesense computed.
+    #
+    # @return [Array<Hash>] { record:, highlights:, highlight:, text_match: }
+    def hits_with_meta
+      hits.map do |hit|
+        {
+          record: @model_class.new(hit['document']),
+          highlights: hit['highlights'] || [],
+          highlight: hit['highlight'] || {},
+          text_match: hit['text_match']
+        }
+      end
+    end
+
+    # Grouped results, populated only when the search used `group_by`.
+    #
+    # @return [Array<Hash>] { group_key:, hits: [records] }
+    def grouped_hits
+      (@raw_response['grouped_hits'] || []).map do |group|
+        {
+          group_key: group['group_key'],
+          hits: (group['hits'] || []).map { |h| @model_class.new(h['document']) }
+        }
+      end
+    end
+
     def size
       total_hits
     end
@@ -68,13 +92,13 @@ module TypesenseModel
       @raw_response['found'] || 0
     end
     # PAGY COMPATIBILITY
-    def count(_)
+    def count(*)
       total_hits
     end
-    def offset(_)
+    def offset(*)
       self
     end
-    def limit(_)
+    def limit(*)
       self
     end
 
