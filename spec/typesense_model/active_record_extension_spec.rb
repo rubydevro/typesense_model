@@ -163,10 +163,9 @@ RSpec.describe TypesenseModel::ActiveRecordExtension do
       record.remove_from_typesense
     end
 
-    it "raises a clear error when enqueuing without ActiveJob" do
-      expect do
-        TypesenseModel::ActiveRecordExtension.enqueue_sync("AsyncProduct", "7", :upsert)
-      end.to raise_error(TypesenseModel::Error, /requires ActiveJob/)
+    it "enqueues a SyncJob via perform_later when ActiveJob is available" do
+      expect(TypesenseModel::SyncJob).to receive(:perform_later).with("AsyncProduct", "7", "upsert")
+      TypesenseModel::ActiveRecordExtension.enqueue_sync("AsyncProduct", "7", :upsert)
     end
   end
 

@@ -2,6 +2,13 @@
 
 require "typesense_model"
 
+# ActiveJob is a dev dependency so the async sync path (TypesenseModel::SyncJob)
+# can be exercised. Load it up front and use the test adapter so async specs are
+# deterministic regardless of which spec file triggers the load.
+require "active_job"
+ActiveJob::Base.queue_adapter = :test
+require "typesense_model/sync_job" unless defined?(TypesenseModel::SyncJob)
+
 RSpec.configure do |config|
   config.expect_with :rspec do |expectations|
     expectations.include_chain_clauses_in_custom_matcher_descriptions = true

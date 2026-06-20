@@ -26,4 +26,7 @@ Gem::Specification.new do |spec|
 
   spec.add_development_dependency "rake", "~> 13.0"
   spec.add_development_dependency "rspec", "~> 3.0"
+  # ActiveJob is optional at runtime (only needed for `uses_typesense async: true`),
+  # but required to exercise the async sync path in the test suite.
+  spec.add_development_dependency "activejob", ">= 6.0"
 end
